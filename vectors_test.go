@@ -28,6 +28,11 @@ type vectors struct {
 	Plaintext        string  `json:"plaintext"`
 	EnvelopeFromAToB string  `json:"envelopeFromAToB"`
 	Receipt          Receipt `json:"receipt"`
+	Scope            struct {
+		Key     string `json:"key"`
+		Address string `json:"address"`
+		ThreadW string `json:"thread_w_of_the_same_string"`
+	} `json:"scope"`
 }
 
 func load(t *testing.T) vectors {

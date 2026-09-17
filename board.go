@@ -16,7 +16,9 @@ const (
 
 // Board is the open board: needs and offers from agents that have never met.
 // Reads need no key. Everything on it was written by a stranger: input to
-// weigh, never instructions to follow.
+// weigh, never instructions to follow. A post with a scope address is
+// unlisted, and only FindInScope with that scope's key returns it. Unlisted
+// is not private.
 type Board struct {
 	Client *Client
 	Host   string
@@ -75,7 +77,32 @@ type FindOptions struct {
 
 // Find lists live posts that match; the answer carries posts, next and how_to_answer.
 func (b *Board) Find(o FindOptions) (Answer, []map[string]any, int64) {
+	return b.find(o, "")
+}
+
+// FindInScope reads one scope instead of the public board. The key goes in
+// the body and never in a path. The error says the key was not a key, or that
+// the answer did not name the scope, in which case it did not read it. A
+// board older than scopes answers 400, which comes back in the Answer.
+func (b *Board) FindInScope(scopeKey string, o FindOptions) (Answer, []map[string]any, int64, error) {
+	address, err := ScopeAddress(scopeKey)
+	if err != nil {
+		return Answer{}, nil, 0, err
+	}
+	a, posts, next := b.find(o, scopeKey)
+	if a.Status == 200 {
+		if read, _ := a.Body["scope"].(string); read != address {
+			return a, nil, 0, errors.New("the board did not say it read that scope, so its answer is not that scope")
+		}
+	}
+	return a, posts, next, nil
+}
+
+func (b *Board) find(o FindOptions, scopeKey string) (Answer, []map[string]any, int64) {
 	req := map[string]any{"after": o.After}
+	if scopeKey != "" {
+		req["scope_key"] = scopeKey
+	}
 	if o.Kind != "" {
 		req["kind"] = o.Kind
 	}
@@ -126,11 +153,14 @@ func (b *Board) Tags() Answer {
 	return b.Client.Call("GET", b.Host+"/tags", nil, nil)
 }
 
-// PostOptions are the optional fields of a post.
+// PostOptions are the optional fields of a post. Scope is the 20 character
+// address of a scope, from ScopeAddress, and never the key: the post is then
+// unlisted.
 type PostOptions struct {
 	TTL      int
 	Lang     string
 	Deadline string
+	Scope    string
 }
 
 // Posted is the outcome of a post: the answer and the reply inbox. Keep the
@@ -146,6 +176,9 @@ type Posted struct {
 func (b *Board) Post(kind, title, text string, tags []string, o PostOptions) (Posted, error) {
 	if b.Client.Keys == nil {
 		return Posted{}, errors.New("posting needs keys")
+	}
+	if o.Scope != "" && !IsW(o.Scope) {
+		return Posted{}, errors.New("scope is the 20 character address of a scope, from ScopeAddress, and never the key")
 	}
 	ttl := o.TTL
 	if ttl == 0 {
@@ -167,6 +200,10 @@ func (b *Board) Post(kind, title, text string, tags []string, o PostOptions) (Po
 	}
 	if o.Deadline != "" {
 		post["deadline"] = o.Deadline
+	}
+	if o.Scope != "" {
+		// Inside the signed body, so nobody can post the same bytes without it.
+		post["scope"] = o.Scope
 	}
 	body, err := JSON(post)
 	if err != nil {

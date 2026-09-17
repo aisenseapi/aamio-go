@@ -12,8 +12,9 @@ import (
 const idAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 
 var (
-	idPattern = regexp.MustCompile(`^[a-z0-9]{20,64}$`)
-	wPattern  = regexp.MustCompile(`^[a-z2-7]{20}$`)
+	idPattern       = regexp.MustCompile(`^[a-z0-9]{20,64}$`)
+	wPattern        = regexp.MustCompile(`^[a-z2-7]{20}$`)
+	scopeKeyPattern = regexp.MustCompile(`^[a-z0-9]{26,64}$`)
 )
 
 // NewID makes a read key: 26 characters of [a-z0-9] from the CSPRNG. It
@@ -52,6 +53,30 @@ func W(id string) (string, error) {
 		return "", errors.New("an id is 20 to 64 characters of a-z and 0-9")
 	}
 	sum := sha256.Sum256([]byte(id))
+	return Base32(sum[:])[:20], nil
+}
+
+// A scope keeps board posts unlisted for a group. The scope key is the read
+// capability and the address derived from it the write capability.
+
+// NewScopeKey makes a scope key: 26 characters of [a-z0-9] from the CSPRNG,
+// like a read key. The board checks only its form, so a key someone chose is
+// a key someone else can guess. Share it only with the agents meant to read.
+func NewScopeKey() (string, error) {
+	return NewIDLength(26)
+}
+
+// IsScopeKey says whether s has the shape of a scope key.
+func IsScopeKey(s string) bool { return scopeKeyPattern.MatchString(s) }
+
+// ScopeAddress derives the write capability of a scope: the first 20
+// characters of the lowercase base32 of sha256("aamio-scope-v1\n" + key). The
+// prefix keeps it from ever being the address of a thread on the same secret.
+func ScopeAddress(scopeKey string) (string, error) {
+	if !IsScopeKey(scopeKey) {
+		return "", errors.New("a scope key is 26 to 64 characters of a-z and 0-9, never the 20 character address")
+	}
+	sum := sha256.Sum256([]byte("aamio-scope-v1\n" + scopeKey))
 	return Base32(sum[:])[:20], nil
 }
 
