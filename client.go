@@ -155,6 +155,11 @@ type Sent struct {
 	Bytes []byte
 	Work  string
 	Notes []string
+	// Stopped is true when this client refused to send at all, because the
+	// inbox asks for something it cannot do. Nothing left the machine, so
+	// nothing can have landed. Status 0 alone means the opposite: no answer
+	// came back and the request may be through.
+	Stopped bool
 }
 
 // SendOptions shape a write.
@@ -199,7 +204,7 @@ func (c *Client) Send(w string, body []byte, opts SendOptions) (Sent, error) {
 	}
 	plan := PlanFor(c.Gate(w, false))
 	if plan.Stop != "" {
-		return Sent{Answer: Answer{Status: 0, Body: map[string]any{"error": plan.Stop, "fix": "Open an address whose conditions this client can meet, or update the client."}}, Notes: plan.Notes}, nil
+		return Sent{Stopped: true, Answer: Answer{Status: 0, Body: map[string]any{"error": plan.Stop, "fix": "Open an address whose conditions this client can meet, or update the client."}}, Notes: plan.Notes}, nil
 	}
 	attempt := func(bits int) (Answer, string, error) {
 		headers := map[string]string{"Content-Type": contentType}
@@ -269,7 +274,10 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 	}
 	a := c.Call("GET", c.Host+path, nil, map[string]string{"X-Read": id})
 	var messages []Message
-	var next int64
+	// The cursor the caller already has, so a refusal or a dead connection
+	// leaves it where it was. Zero sent the documented loop back to the first
+	// message and delivered the whole thread a second time.
+	next := int64(after)
 	if a.Status == 200 && a.Body != nil {
 		if n, ok := a.Body["next"].(json.Number); ok {
 			next, _ = n.Int64()
@@ -301,8 +309,22 @@ func (c *Client) Decode(raw map[string]any) Message {
 	m.Body, _ = raw["body"].(string)
 	text := m.Body
 	if m.Sealed {
-		m.Format = "sealed-to-someone-else"
-		if c.Keys != nil && m.From != "" {
+		// The envelope names who it is sealed to, so read that rather than
+		// guess. This said "sealed to someone else" whenever the client had no
+		// keys or the message carried no sender, with no error beside the
+		// claim, and envelopes sealed to the reader were dropped on that word.
+		to := EnvelopeTo([]byte(m.Body))
+		mine := ""
+		if c.Keys != nil {
+			mine = c.Keys.HashPrefix
+		}
+		switch {
+		case to != "" && mine != "" && to != mine:
+			m.Format = "sealed-to-someone-else"
+			m.Err = "this envelope is sealed to " + to + ", not to " + mine
+		case c.Keys == nil || m.From == "":
+			m.Format = "sealed-unchecked"
+		default:
 			plain, err := c.Keys.Open(m.From, []byte(m.Body))
 			if err != nil {
 				m.Format = "unreadable"
@@ -312,6 +334,12 @@ func (c *Client) Decode(raw map[string]any) Message {
 				m.Opened = string(plain)
 				text = m.Opened
 			}
+		}
+		if m.Format != "sealed" {
+			// Nothing was opened, so there is no payload here. JSON used to
+			// hold the envelope itself, and "if JSON != nil" then read as
+			// "this message was decoded".
+			return m
 		}
 	}
 	dec := json.NewDecoder(strings.NewReader(text))

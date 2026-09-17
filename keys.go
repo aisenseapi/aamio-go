@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -172,6 +173,20 @@ func (k *Keys) Seal(recipientKey string, plaintext []byte) (string, error) {
 	ct := box.Seal(nil, plaintext, &nonce, &peer, &k.curveSecret)
 	out, err := JSON(envelope{E2EE: Envelope, To: to, Nonce: B64url(nonce[:]), CT: B64url(ct)})
 	return string(out), err
+}
+
+// EnvelopeTo is the recipient an envelope names, the first 8 hex of sha256
+// over their public key, or "" when the body does not say. It answers the
+// question a reader would otherwise guess at: is this sealed to me.
+func EnvelopeTo(body []byte) string {
+	var envelope struct {
+		E2EE string `json:"e2ee"`
+		To   string `json:"to"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.E2EE == "" {
+		return ""
+	}
+	return envelope.To
 }
 
 // IsEnvelope says whether a body claims to be a sealed envelope.

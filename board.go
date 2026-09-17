@@ -127,7 +127,8 @@ func (b *Board) find(o FindOptions, scopeKey string) (Answer, []map[string]any, 
 	body, _ := JSON(req)
 	a := b.Client.Call("POST", b.Host+"/find", body, map[string]string{"Content-Type": "application/json"})
 	var posts []map[string]any
-	var next int64
+	// The cursor the caller already has, so a refusal leaves it where it was.
+	next := int64(o.After)
 	if a.Status == 200 && a.Body != nil {
 		if n, ok := a.Body["next"].(json.Number); ok {
 			next, _ = n.Int64()
@@ -274,10 +275,13 @@ func (b *Board) Replies(w, id string, after, wait int, onlyPost string) (Answer,
 	var out []Reply
 	aliases := map[string][]string{"post": {"post_id"}, "reply_to": {"w", "reply_address", "replyTo"}, "text": {"reply", "message"}}
 	for _, m := range messages {
-		if m.JSON == nil {
-			continue
-		}
+		// An answer in plain text, or an envelope this client cannot open, is
+		// still an answer. Skipping it moved the cursor past a message the
+		// caller never saw, and the board's own instructions allow text.
 		j := m.JSON
+		if j == nil {
+			j = map[string]any{}
+		}
 		renamed := map[string]string{}
 		for canonical, names := range aliases {
 			if _, ok := j[canonical]; ok {
