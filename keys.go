@@ -21,8 +21,8 @@ const Envelope = "nacl.box.v1"
 // Ed25519 pair the way libsodium does it, so a box sealed here opens in the
 // other clients, and theirs open here.
 type Keys struct {
-	seed       []byte
-	private    ed25519.PrivateKey
+	seed        []byte
+	private     ed25519.PrivateKey
 	curveSecret [32]byte
 	// Public is the key as it travels: base64url, 43 characters.
 	Public string

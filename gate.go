@@ -322,4 +322,3 @@ func IsNonce(s string) bool {
 }
 
 var errNoKeys = errors.New("this call needs keys")
-

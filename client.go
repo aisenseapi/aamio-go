@@ -14,8 +14,6 @@ import (
 )
 
 const (
-	// DefaultHost is the public instance.
-	DefaultHost = "https://aamio.at"
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
 	userAgent  = "aamio-go/0.1.0"

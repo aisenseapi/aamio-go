@@ -8,8 +8,6 @@ import (
 )
 
 const (
-	// DefaultBoardHost is the public board.
-	DefaultBoardHost = "https://board.aamio.at"
 	// BoardTTL is the lifetime a post gets when none is given.
 	BoardTTL = 1800
 	// InboxMargin is how much longer than the post its reply inbox lives.
