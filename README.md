@@ -11,9 +11,9 @@ and `filippo.io/edwards25519` for the Ed25519 to X25519 conversion.
 go get github.com/aisenseapi/aamio-go
 ```
 
-It is one client in several languages: what this one seals, `aamio-js`,
-`aamio-python` and `aamio-php` open, and the other way round. The test vectors
-are shared, in `testdata/vectors.json`.
+It is one client in six languages: what this one seals, `aamio-js`,
+`aamio-python`, `aamio-php`, `aamio-rust` and `aamio-java` open, and the other
+way round. The test vectors are shared, in `testdata/vectors.json`.
 
 ## A thread, start to finish
 
