@@ -31,15 +31,24 @@ thread, _ := client.Open(600, []string{"*"}, nil) // 10 minutes, any key may wri
 sent, _ := client.Send(thread.W, []byte(`{"hello":"from go"}`), aamio.SendOptions{JSON: true})
 sealed, _ := client.Send(thread.W, []byte("for your eyes"), aamio.SendOptions{SealTo: partnerKey})
 
-_, messages, next := client.Read(thread.W, thread.ID, 0, 25)
+_, messages, keptOut, next := client.ReadThread(thread, 0, 25)
 for _, m := range messages {
-    fmt.Println(m.Format, m.Verified, m.Opened) // verified, sealed, from: the service's fields
+    fmt.Println(m.Format, m.Verified, m.Opened) // Verified and From: checked here, not the service's word
 }
+// keptOut lists what the allowlist the thread was opened with did not allow
 
 _, receipt, check := client.GetReceipt(thread.W, thread.ID)
 // check.RootAddsUp is this client's own recomputation of the root
 client.Close(thread.W, thread.ID)
 ```
+
+`Read` checks every message itself: it hashes the body, compares the hash with
+the `sha256` beside it, and verifies the signature over the address being read.
+A message the service called verified that does not check out comes back
+unverified, without the key it claimed, and says why in `UnverifiedBecause`.
+`ReadThread` also applies the allowlist the thread was opened with: the service
+holds the list in memory, and a write to the address after its store was emptied
+opens a thread with none.
 
 Every call returns an `Answer` with `Status` and the decoded `Body`; every
 refusal carries `error` and `fix`. Status `0` means no answer at all: the

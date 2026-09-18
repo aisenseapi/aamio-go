@@ -21,7 +21,7 @@ var errWorkRanOut = errors.New("the work ran past the time the inbox takes write
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.2.3"
+	userAgent  = "aamio-go/0.2.4"
 	maxBody    = 65536
 )
 
@@ -108,10 +108,13 @@ func (c *Client) Call(method, url string, body []byte, headers map[string]string
 
 // ------------------------------------------------------------------ threads --
 
-// Thread is an opened thread: keep ID, share W.
+// Thread is an opened thread: keep ID, share W. Allow is the allowlist it was
+// opened with, kept here because the service holds it in memory only: see
+// ReadThread.
 type Thread struct {
-	ID string
-	W  string
+	ID    string
+	W     string
+	Allow []string
 	Answer
 }
 
@@ -135,7 +138,7 @@ func (c *Client) Open(ttl int, allow []string, gate map[string]any) (Thread, err
 		}
 	}
 	a := c.Call("PUT", c.Host+"/"+w, body, headers)
-	return Thread{ID: id, W: w, Answer: a}, nil
+	return Thread{ID: id, W: w, Allow: append([]string(nil), allow...), Answer: a}, nil
 }
 
 // Gate reads the conditions an inbox was opened with, once per address unless
@@ -359,9 +362,25 @@ type Message struct {
 	Format   string // text | sealed | unreadable | sealed-to-someone-else
 	Err      string
 	JSON     map[string]any
+	// UnverifiedBecause is set by Read when something that should have held did
+	// not: the service called the message verified, or gave its hash, and it
+	// does not check out here. Verified is then false and From is empty.
+	UnverifiedBecause string
+}
+
+// KeptOut is a message the thread's own allowlist kept out of what ReadThread handed over.
+type KeptOut struct {
+	Seq int64
+	Why string
 }
 
 // Read reads with the read key from after, waiting up to wait seconds (25 at most).
+//
+// Every message is checked here before it is handed over: the body is hashed
+// and compared with the sha256 beside it, and the signature is verified over
+// this address. Verified and From on what comes back are this client's result,
+// not the service's word, and a message the service called verified that does
+// not check out says why in UnverifiedBecause.
 func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) {
 	path := "/" + w
 	if after > 0 || wait > 0 {
@@ -386,7 +405,7 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 		if list, ok := a.Body["messages"].([]any); ok {
 			for _, item := range list {
 				if m, ok := item.(map[string]any); ok {
-					messages = append(messages, c.Decode(m))
+					messages = append(messages, c.DecodeAt(w, m))
 				}
 			}
 		}
@@ -394,8 +413,109 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 	return a, messages, next
 }
 
+// ReadThread is Read for a thread this client opened, with the allowlist it
+// was opened with applied to what is read. The service enforces the list while
+// it holds the thread, and it holds it in memory: a write to the address after
+// its store was emptied opens a thread with no list. With named keys, only
+// messages verified here from one of them are handed over; with "*", only
+// messages verified here from any key. The rest is listed as kept out, never
+// dropped in silence. The cursor covers both.
+func (c *Client) ReadThread(t Thread, after, wait int) (Answer, []Message, []KeptOut, int64) {
+	a, messages, next := c.Read(t.W, t.ID, after, wait)
+	if len(t.Allow) == 0 {
+		return a, messages, nil, next
+	}
+	anySigned := false
+	for _, key := range t.Allow {
+		if key == "*" {
+			anySigned = true
+		}
+	}
+	var handed []Message
+	var kept []KeptOut
+	for _, m := range messages {
+		allowed := m.Verified && anySigned
+		if m.Verified && !anySigned {
+			for _, key := range t.Allow {
+				if key == m.From {
+					allowed = true
+				}
+			}
+		}
+		if allowed {
+			handed = append(handed, m)
+			continue
+		}
+		why := "this thread was opened for named keys, and this one was not signed by one of them, as checked here"
+		if anySigned {
+			why = "this thread was opened for signed messages only, and this one did not verify here"
+		}
+		kept = append(kept, KeptOut{Seq: m.Seq, Why: why})
+	}
+	return a, handed, kept, next
+}
+
+// CheckMessage checks one message as the service returned it: the body is
+// hashed and compared with the sha256 beside it, and the signature verified
+// over the address being read. verified in an answer is the service's word, and
+// the trust model says an operator cannot forge a signature, which only holds
+// for a reader that checks. whyNot is empty for a message that verified and for
+// an ordinary unsigned one, and a sentence when something that should have held
+// did not.
+func CheckMessage(w string, raw map[string]any) (verified bool, whyNot string, digest string) {
+	body, ok := raw["body"].(string)
+	if !ok {
+		return false, "the message has no body to check", ""
+	}
+	digest = Sha256Hex([]byte(body))
+	if given, _ := raw["sha256"].(string); given != digest {
+		return false, "the body does not hash to the sha256 the service gave with it, so these are not the bytes that were stored", digest
+	}
+	from, _ := raw["from"].(string)
+	signature, _ := raw["sig"].(string)
+	claimed, _ := raw["verified"].(bool)
+	if from == "" || signature == "" {
+		if claimed {
+			return false, "the service calls it verified and gave no key or signature to check", digest
+		}
+		return false, "", digest
+	}
+	if Verify(from, signature, ThreadSigningInput(w, []byte(body))) {
+		return true, "", digest
+	}
+	whyNot = "the signature does not check out for this key, this address and these bytes"
+	if claimed {
+		whyNot += ", though the service said it did"
+	}
+	return false, whyNot, digest
+}
+
+// DecodeAt is Decode for a message read at w: the hash and the signature are
+// checked first, and everything Decode does goes by that result. A message that
+// does not verify here has no From, so a sealed body under a forged sender is
+// not opened against the key it claimed.
+func (c *Client) DecodeAt(w string, raw map[string]any) Message {
+	verified, whyNot, digest := CheckMessage(w, raw)
+	checked := make(map[string]any, len(raw))
+	for key, value := range raw {
+		checked[key] = value
+	}
+	checked["verified"] = verified
+	if !verified {
+		checked["from"] = nil
+	}
+	if digest != "" {
+		checked["sha256"] = digest
+	}
+	m := c.Decode(checked)
+	m.UnverifiedBecause = whyNot
+	return m
+}
+
 // Decode turns one raw message into a Message, opening it when it is sealed
-// to us. verified, sealed and from are the service's fields, never the payload's.
+// to us. verified, sealed and from are never taken from the payload. Decode
+// takes the service's fields as they are; Read goes through DecodeAt, which
+// checks them first.
 func (c *Client) Decode(raw map[string]any) Message {
 	m := Message{Format: "text"}
 	if n, ok := raw["seq"].(json.Number); ok {
