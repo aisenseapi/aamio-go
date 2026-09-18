@@ -270,7 +270,13 @@ type Reply struct {
 // Replies reads answers on an inbox. Aliases post_id, w, reply_address,
 // replyTo, reply and message are accepted and named under Renamed; verified,
 // sealed and from are the service's fields, never the payload's.
-func (b *Board) Replies(w, id string, after, wait int, onlyPost string) (Answer, []Reply, int64) {
+//
+// Everything read is returned, answers to other posts included. There is no
+// post filter here, because a read that filters loses what it filtered: the
+// cursor returned is the service's, counted over every message read, so a
+// caller looping on it never sees the dropped ones again and a library keeps
+// no archive to find them in. Filter the returned slice on Post.
+func (b *Board) Replies(w, id string, after, wait int) (Answer, []Reply, int64) {
 	a, messages, next := b.Client.Read(w, id, after, wait)
 	var out []Reply
 	aliases := map[string][]string{"post": {"post_id"}, "reply_to": {"w", "reply_address", "replyTo"}, "text": {"reply", "message"}}
@@ -300,9 +306,6 @@ func (b *Board) Replies(w, id string, after, wait int, onlyPost string) (Answer,
 		r.ReplyTo, _ = j["reply_to"].(string)
 		r.Text, _ = j["text"].(string)
 		r.Data, _ = j["data"].(map[string]any)
-		if onlyPost != "" && r.Post != onlyPost {
-			continue
-		}
 		out = append(out, r)
 	}
 	return a, out, next

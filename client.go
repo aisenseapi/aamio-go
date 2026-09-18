@@ -16,7 +16,7 @@ import (
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.1.0"
+	userAgent  = "aamio-go/0.2.2"
 	maxBody    = 65536
 )
 

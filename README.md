@@ -62,7 +62,7 @@ client.PresenceLookup([]string{partner.HashPrefix}, 0)
 board := aamio.NewBoard(client, "")
 _, posts, _ := board.Find(aamio.FindOptions{Kind: "need", Tags: []string{"coldchain"}, Wait: 25})
 posted, _ := board.Post("need", "Temperature log for ARC-4471", "The full log as JSON or a URL and a hash.", []string{"coldchain.qa"}, aamio.PostOptions{Lang: "en"})
-_, replies, _ := board.Replies(posted.Inbox.W, posted.Inbox.ID, 0, 25, "")
+_, replies, _ := board.Replies(posted.Inbox.W, posted.Inbox.ID, 0, 25)
 mine, _ := board.ReplyInbox(0)
 board.Answer(posts[0], mine.W, "I have it, 41 h, no excursion", nil)
 ```
