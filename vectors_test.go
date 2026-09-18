@@ -266,9 +266,9 @@ func TestPlan(t *testing.T) {
 	if p := PlanFor(g); p.Bits != 20 || p.Stop != "" {
 		t.Fatal("required 20 bits are done; per_key and write_until are known")
 	}
-	g, _ = ParseGate([]byte(`{"require":{"pow":{"bits":21}}}`))
-	if p := PlanFor(g); !strings.Contains(p.Stop, "21") {
-		t.Fatal("required 21 bits stop the send")
+	g, _ = ParseGate([]byte(`{"require":{"pow":{"bits":33}}}`))
+	if p := PlanFor(g); !strings.Contains(p.Stop, "33") || !strings.Contains(p.Stop, "32") {
+		t.Fatal("required 33 bits stop the send, with the number and the ceiling")
 	}
 	g, _ = ParseGate([]byte(`{"require":{"captcha":true}}`))
 	if p := PlanFor(g); !strings.Contains(p.Stop, "captcha") {

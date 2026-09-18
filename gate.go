@@ -7,16 +7,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
+	"sync"
+	"time"
 	"unicode/utf8"
 )
 
 // The ceilings are the service's own, so an inbox run by a stranger can never
-// make this client spend more CPU than aamio lets any inbox ask for.
+// make this client spend more CPU than aamio lets any inbox ask for. 32 bits
+// is for an inbox that means to meet only writers with real compute: the plan
+// weighs the work against the time the inbox has left and says no before it
+// starts, rather than finding out from a 410 an hour later.
 const (
-	RequireMaxBits = 20
+	RequireMaxBits = 32
 	AdviseMaxBits  = 18
+	// Below this the work is a second or so, and not worth timing first.
+	estimateFromBits = 17
 )
 
 // ---------------------------------------------------------------- canonical --
@@ -200,16 +208,69 @@ func ZeroBits(digest []byte) int {
 
 // Solve finds the first nonce, counting from 0, whose thread digest reaches bits.
 func Solve(w, key string, body []byte, bits int) (string, error) {
+	nonce, _, err := SolveUntil(w, key, body, bits, time.Time{})
+	return nonce, err
+}
+
+// SolveUntil is Solve with a deadline: ok is false when the deadline passes
+// first, and a zero deadline is none. Past the life of the inbox the work buys
+// nothing, and 32 bits can run for hours.
+func SolveUntil(w, key string, body []byte, bits int, deadline time.Time) (string, bool, error) {
 	if bits < 0 || bits > RequireMaxBits {
-		return "", fmt.Errorf("work is 0 to %d bits", RequireMaxBits)
+		return "", false, fmt.Errorf("work is 0 to %d bits", RequireMaxBits)
 	}
 	prefix := "aamio-pow-v1\n" + w + "\n" + key + "\n" + Sha256Hex(body) + "\n"
 	for n := 0; ; n++ {
 		d := sha256.Sum256([]byte(prefix + strconv.Itoa(n)))
 		if ZeroBits(d[:]) >= bits {
-			return strconv.Itoa(n), nil
+			return strconv.Itoa(n), true, nil
+		}
+		// Every 65536 attempts, a twentieth of a second or so here.
+		if !deadline.IsZero() && n&0xFFFF == 0xFFFF && time.Now().After(deadline) {
+			return "", false, nil
 		}
 	}
+}
+
+var (
+	rateOnce sync.Once
+	rate     float64
+)
+
+// HashRate is the attempts a second Solve makes on this machine, timed once
+// and kept. The estimate before long work is only as good as this number, so
+// it is Solve's own loop that is timed, for a quarter of a second.
+func HashRate() float64 {
+	rateOnce.Do(func() {
+		prefix := "aamio-pow-v1\ncalibration\n\n" + fmt.Sprintf("%064d", 0) + "\n"
+		count := 0
+		start := time.Now()
+		for time.Since(start) < 250*time.Millisecond {
+			for i := 0; i < 4096; i, count = i+1, count+1 {
+				d := sha256.Sum256([]byte(prefix + strconv.Itoa(count)))
+				ZeroBits(d[:])
+			}
+		}
+		rate = float64(count) / time.Since(start).Seconds()
+	})
+	return rate
+}
+
+// ExpectedSeconds is how long bits of work takes here on average. It is a
+// lottery: one attempt in a hundred takes about 4.6 times as long.
+func ExpectedSeconds(bits int) float64 {
+	return math.Pow(2, float64(bits)) / HashRate()
+}
+
+// DescribeSeconds says a time as a person would.
+func DescribeSeconds(seconds float64) string {
+	switch {
+	case seconds < 90:
+		return fmt.Sprintf("%d seconds", int(math.Max(1, math.Round(seconds))))
+	case seconds < 5400:
+		return fmt.Sprintf("%d minutes", int(math.Round(seconds/60)))
+	}
+	return fmt.Sprintf("%.1f hours", seconds/3600)
 }
 
 // SolveBoard finds the first nonce whose board digest reaches bits.
@@ -230,15 +291,24 @@ func SolveBoard(key string, body []byte, bits int) (string, error) {
 
 // Plan is what to do about an inbox's gate before writing: Bits to work for
 // (-1 for none), Stop with the reason when the send must not happen, Notes for
-// what was passed over.
+// what was passed over, and ExpectedSeconds, how long the required work takes
+// here.
 type Plan struct {
-	Bits  int
-	Stop  string
-	Notes []string
+	Bits            int
+	Stop            string
+	Notes           []string
+	ExpectedSeconds float64
 }
 
 // PlanFor reads a gate and decides. A nil or empty gate is nothing to do.
 func PlanFor(gate map[string]any) Plan {
+	return PlanWithin(gate, -1)
+}
+
+// PlanWithin is PlanFor weighed against secondsLeft, how long the inbox still
+// takes writes, from X-Seconds-Left on its gate; negative is unknown. Work
+// that would not be done by then is not started.
+func PlanWithin(gate map[string]any, secondsLeft float64) Plan {
 	plan := Plan{Bits: -1}
 	if len(gate) == 0 {
 		return plan
@@ -257,6 +327,15 @@ func PlanFor(gate map[string]any) Plan {
 					plan.Stop = fmt.Sprintf("the inbox requires %d bits of work, above the %d aamio lets an inbox ask for; nothing was sent", bits, RequireMaxBits)
 					return plan
 				}
+				expected := 0.0
+				if bits >= estimateFromBits {
+					expected = ExpectedSeconds(bits)
+				}
+				if secondsLeft >= 0 && expected > secondsLeft {
+					plan.Stop = fmt.Sprintf("the inbox requires %d bits of work, which takes about %s on this machine, and it takes writes for %s more. The work would not be done before it closes, so it was not started and nothing was sent. Ask the owner for a longer inbox or less work, or send from a machine with more compute", bits, DescribeSeconds(expected), DescribeSeconds(secondsLeft))
+					return plan
+				}
+				plan.ExpectedSeconds = expected
 				if bits > plan.Bits {
 					plan.Bits = bits
 				}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,10 +14,14 @@ import (
 	"time"
 )
 
+// errWorkRanOut is the work stopped at the inbox's deadline, turned into a
+// Stopped send before it leaves this file.
+var errWorkRanOut = errors.New("the work ran past the time the inbox takes writes")
+
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.2.2"
+	userAgent  = "aamio-go/0.2.3"
 	maxBody    = 65536
 )
 
@@ -51,6 +56,13 @@ type Client struct {
 
 	mu    sync.Mutex
 	gates map[string]map[string]any
+	// X-Seconds-Left per address, and when it was read.
+	gateLeft map[string]gateClock
+}
+
+type gateClock struct {
+	left float64
+	at   time.Time
 }
 
 // New makes a client for a host; keys may be nil for reads and unsigned writes.
@@ -145,8 +157,66 @@ func (c *Client) Gate(w string, fresh bool) map[string]any {
 	}
 	c.mu.Lock()
 	c.gates[w] = gate
+	// The time left rides in a header, since the body is the exact bytes the
+	// gate hash is taken over.
+	if left, err := strconv.Atoi(a.Header.Get("X-Seconds-Left")); err == nil && a.Status == 200 {
+		c.setLeft(w, float64(left))
+	}
 	c.mu.Unlock()
 	return gate
+}
+
+// setLeft records how long w takes writes. The caller holds mu.
+func (c *Client) setLeft(w string, left float64) {
+	if c.gateLeft == nil {
+		c.gateLeft = map[string]gateClock{}
+	}
+	c.gateLeft[w] = gateClock{left: left, at: time.Now()}
+}
+
+// SecondsLeft is how long w still takes writes, counted down from what its
+// gate said; ok is false when the gate did not say.
+func (c *Client) SecondsLeft(w string) (float64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	said, ok := c.gateLeft[w]
+	if !ok {
+		return 0, false
+	}
+	return math.Max(0, said.left-time.Since(said.at).Seconds()), true
+}
+
+// ForgetGate drops the gate kept for w and the time it said: they belong to
+// an inbox that may not be there now.
+func (c *Client) ForgetGate(w string) {
+	c.mu.Lock()
+	delete(c.gates, w)
+	delete(c.gateLeft, w)
+	c.mu.Unlock()
+}
+
+// PlanTo is the plan for w's gate, read again once before a no that rests on a
+// gate read earlier. A gate never changes while its thread lives, which is why
+// it is kept, but an address can have more than one life: the time a kept gate
+// said counted down to nothing and stayed there, and a new inbox at the same
+// address was refused on the old one's terms without the service being asked.
+func (c *Client) PlanTo(w string) Plan {
+	c.mu.Lock()
+	_, cached := c.gates[w]
+	c.mu.Unlock()
+	plan := PlanWithin(c.Gate(w, false), c.leftOrUnknown(w))
+	if plan.Stop != "" && cached {
+		c.ForgetGate(w)
+		plan = PlanWithin(c.Gate(w, false), c.leftOrUnknown(w))
+	}
+	return plan
+}
+
+func (c *Client) leftOrUnknown(w string) float64 {
+	if left, ok := c.SecondsLeft(w); ok {
+		return left
+	}
+	return -1
 }
 
 // Sent is the outcome of a write: the answer, the exact bytes, the nonce when work was done, and notes.
@@ -202,7 +272,7 @@ func (c *Client) Send(w string, body []byte, opts SendOptions) (Sent, error) {
 	if signing {
 		key = c.Keys.Public
 	}
-	plan := PlanFor(c.Gate(w, false))
+	plan := c.PlanTo(w)
 	if plan.Stop != "" {
 		return Sent{Stopped: true, Answer: Answer{Status: 0, Body: map[string]any{"error": plan.Stop, "fix": "Open an address whose conditions this client can meet, or update the client."}}, Notes: plan.Notes}, nil
 	}
@@ -214,16 +284,31 @@ func (c *Client) Send(w string, body []byte, opts SendOptions) (Sent, error) {
 		}
 		work := ""
 		if bits > 0 {
-			nonce, err := Solve(w, key, body, bits)
+			// The work stops when the inbox would close, less a few seconds
+			// for the post itself: past that a nonce buys nothing but a 410.
+			var deadline time.Time
+			if left, ok := c.SecondsLeft(w); ok {
+				deadline = time.Now().Add(time.Duration(math.Max(0, left-5) * float64(time.Second)))
+			}
+			nonce, done, err := SolveUntil(w, key, body, bits, deadline)
 			if err != nil {
 				return Answer{}, "", err
+			}
+			if !done {
+				return Answer{}, "", errWorkRanOut
 			}
 			work = nonce
 			headers["X-Work"] = work
 		}
 		return c.Call("POST", c.Host+"/"+w, body, headers), work, nil
 	}
+	ranOut := func(bits int) Sent {
+		return Sent{Stopped: true, Answer: Answer{Status: 0, Body: map[string]any{"error": fmt.Sprintf("the proof of work of %d bits was not done before the inbox stops taking writes, so the work was stopped and nothing was sent", bits), "fix": "The estimate before it started said it would fit, and this time it took longer, which happens: the work is a lottery. Ask the owner for a longer inbox, or send from a machine with more compute."}}, Notes: plan.Notes}
+	}
 	a, work, err := attempt(plan.Bits)
+	if errors.Is(err, errWorkRanOut) {
+		return ranOut(plan.Bits), nil
+	}
 	if err != nil {
 		return Sent{}, err
 	}
@@ -231,16 +316,32 @@ func (c *Client) Send(w string, body []byte, opts SendOptions) (Sent, error) {
 		if gate, ok := a.Body["gate"].(map[string]any); ok {
 			c.mu.Lock()
 			c.gates[w] = gate
+			if left, ok := a.Body["seconds_left"].(json.Number); ok {
+				if n, err := left.Int64(); err == nil {
+					c.setLeft(w, float64(n))
+				}
+			}
 			c.mu.Unlock()
-			again := PlanFor(gate)
-			if again.Stop == "" && again.Bits > 0 {
+			again := PlanWithin(gate, c.leftOrUnknown(w))
+			if again.Stop != "" {
+				return Sent{Stopped: true, Answer: Answer{Status: 0, Body: map[string]any{"error": again.Stop, "fix": "Open an address whose conditions this client can meet, or update the client."}}, Notes: append(plan.Notes, again.Notes...)}, nil
+			}
+			if again.Bits > 0 {
 				a, work, err = attempt(again.Bits)
+				if errors.Is(err, errWorkRanOut) {
+					return ranOut(again.Bits), nil
+				}
 				if err != nil {
 					return Sent{}, err
 				}
 				plan.Notes = append(plan.Notes, again.Notes...)
 			}
 		}
+	}
+	// An inbox that is not there, or has expired, takes its gate with it: the
+	// next send here reads the gate of whatever is there then.
+	if a.Status == 404 || a.Status == 410 {
+		c.ForgetGate(w)
 	}
 	return Sent{Answer: a, Bytes: body, Work: work, Notes: plan.Notes}, nil
 }
