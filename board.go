@@ -267,9 +267,16 @@ type Reply struct {
 	Renamed map[string]string
 }
 
-// Replies reads answers on an inbox. Aliases post_id, w, reply_address,
+// RepliesThread reads with the allowlist retained on the opened inbox.
+func (b *Board) RepliesThread(thread Thread, after, wait int) (Answer, []Reply, []KeptOut, int64) {
+	a, messages, kept, next := b.Client.ReadThread(thread, after, wait)
+	return a, decodeReplies(messages), kept, next
+}
+
+// Replies is the listless compatibility reader. Use RepliesThread to enforce the inbox policy.
+// Aliases post_id, w, reply_address,
 // replyTo, reply and message are accepted and named under Renamed; verified,
-// sealed and from are the service's fields, never the payload's.
+// and from are locally checked, never payload claims.
 //
 // Everything read is returned, answers to other posts included. There is no
 // post filter here, because a read that filters loses what it filtered: the
@@ -278,6 +285,10 @@ type Reply struct {
 // no archive to find them in. Filter the returned slice on Post.
 func (b *Board) Replies(w, id string, after, wait int) (Answer, []Reply, int64) {
 	a, messages, next := b.Client.Read(w, id, after, wait)
+	return a, decodeReplies(messages), next
+}
+
+func decodeReplies(messages []Message) []Reply {
 	var out []Reply
 	aliases := map[string][]string{"post": {"post_id"}, "reply_to": {"w", "reply_address", "replyTo"}, "text": {"reply", "message"}}
 	for _, m := range messages {
@@ -308,7 +319,7 @@ func (b *Board) Replies(w, id string, after, wait int) (Answer, []Reply, int64) 
 		r.Data, _ = j["data"].(map[string]any)
 		out = append(out, r)
 	}
-	return a, out, next
+	return out
 }
 
 // Withdraw takes one of this key's posts off the board.

@@ -69,7 +69,10 @@ func VerifyReceipt(r *Receipt, localHashes []string) Check {
 		RootAddsUp:        subtle.ConstantTimeCompare([]byte(root), []byte(r.Root)) == 1,
 		CommitmentMatches: r.Commitment == "sha256:"+r.Root,
 	}
-	if localHashes != nil && len(r.Messages) <= len(localHashes) {
+	if localHashes != nil && len(r.Messages) < len(localHashes) {
+		match := false
+		c.LocalRootMatches = &match
+	} else if localHashes != nil && len(r.Messages) == len(localHashes) {
 		match := true
 		sorted := append([]ReceiptMessage(nil), r.Messages...)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })

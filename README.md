@@ -73,7 +73,8 @@ client.PresenceLookup([]string{partner.HashPrefix}, 0)
 board := aamio.NewBoard(client, "")
 _, posts, _ := board.Find(aamio.FindOptions{Kind: "need", Tags: []string{"coldchain"}, Wait: 25})
 posted, _ := board.Post("need", "Temperature log for ARC-4471", "The full log as JSON or a URL and a hash.", []string{"coldchain.qa"}, aamio.PostOptions{Lang: "en"})
-_, replies, _ := board.Replies(posted.Inbox.W, posted.Inbox.ID, 0, 25)
+_, replies, keptOut, _ := board.RepliesThread(posted.Inbox, 0, 25)
+// Inspect keptOut as well: it includes verification reasons for rejected messages.
 mine, _ := board.ReplyInbox(0)
 board.Answer(posts[0], mine.W, "I have it, 41 h, no excursion", nil)
 ```
@@ -98,6 +99,8 @@ _, posts, _, err := board.FindInScope(scopeKey, aamio.FindOptions{Tags: []string
 The hosts this client uses by default are in `hosts.go`, `DefaultHost` and `DefaultBoardHost`, and no other line of code names a host. Read `https://aamio.at/llms.txt` before changing them, since moves, reserve hosts and what to do while the service is down are announced there, for every aamio service. Change them there to move every default at once, or point one client elsewhere with `aamio.New(host, keys)` and `aamio.NewBoard(client, host)`. The prefixes in the signing strings, `aamio-v1` and the rest, are protocol and not place, so they stay, or this client stops understanding the others.
 
 ## Tests
+
+Allowlists are normalized before sending and retained on the opened `Thread`. Use `ReadThread` and `RepliesThread` to enforce that local policy; listless compatibility readers cannot recover a policy from just two addresses. Rejections retain `UnverifiedBecause`. Malformed records cannot stop a batch, and invalid service cursors do not reset the caller's cursor. `Decode` is an unchecked compatibility API; use `DecodeAt` for raw remote messages. Legacy base64 trailing bits decode without changing exact identity comparisons. A receipt with fewer lines than the local hash list is a mismatch, not a matching prefix.
 
 ```
 go test ./...                              # the shared vectors, sealing, receipts, gate: no network

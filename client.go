@@ -21,7 +21,7 @@ var errWorkRanOut = errors.New("the work ran past the time the inbox takes write
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.2.4"
+	userAgent  = "aamio-go/0.2.5"
 	maxBody    = 65536
 )
 
@@ -121,6 +121,7 @@ type Thread struct {
 // Open opens a thread with a lifetime. allow lists signer keys, or ["*"] for
 // any key as long as the message is signed; gate sets conditions, or nil.
 func (c *Client) Open(ttl int, allow []string, gate map[string]any) (Thread, error) {
+	allow = normalizeAllow(allow)
 	id, err := NewID()
 	if err != nil {
 		return Thread{}, err
@@ -139,6 +140,42 @@ func (c *Client) Open(ttl int, allow []string, gate map[string]any) (Thread, err
 	}
 	a := c.Call("PUT", c.Host+"/"+w, body, headers)
 	return Thread{ID: id, W: w, Allow: append([]string(nil), allow...), Answer: a}, nil
+}
+
+func normalizeAllow(allow []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, entry := range allow {
+		for _, part := range strings.Split(entry, ",") {
+			key := strings.TrimSpace(part)
+			if key != "" && !seen[key] {
+				out = append(out, key)
+				seen[key] = true
+			}
+		}
+	}
+	if seen["*"] {
+		return []string{"*"}
+	}
+	return out
+}
+
+// integer accepts JSON decoder numbers and exact integer values from json.Unmarshal.
+func integer(value any) (int64, bool) {
+	switch n := value.(type) {
+	case json.Number:
+		v, err := n.Int64()
+		return v, err == nil
+	case float64:
+		if !math.IsNaN(n) && !math.IsInf(n, 0) && n >= -9223372036854775808.0 && n < 9223372036854775808.0 && math.Trunc(n) == n {
+			return int64(n), true
+		}
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
 }
 
 // Gate reads the conditions an inbox was opened with, once per address unless
@@ -370,8 +407,9 @@ type Message struct {
 
 // KeptOut is a message the thread's own allowlist kept out of what ReadThread handed over.
 type KeptOut struct {
-	Seq int64
-	Why string
+	Seq               int64
+	Why               string
+	UnverifiedBecause string
 }
 
 // Read reads with the read key from after, waiting up to wait seconds (25 at most).
@@ -399,14 +437,13 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 	// message and delivered the whole thread a second time.
 	next := int64(after)
 	if a.Status == 200 && a.Body != nil {
-		if n, ok := a.Body["next"].(json.Number); ok {
-			next, _ = n.Int64()
+		if n, ok := integer(a.Body["next"]); ok {
+			next = n
 		}
 		if list, ok := a.Body["messages"].([]any); ok {
 			for _, item := range list {
-				if m, ok := item.(map[string]any); ok {
-					messages = append(messages, c.DecodeAt(w, m))
-				}
+				m, _ := item.(map[string]any)
+				messages = append(messages, c.DecodeAt(w, m))
 			}
 		}
 	}
@@ -421,6 +458,7 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 // messages verified here from any key. The rest is listed as kept out, never
 // dropped in silence. The cursor covers both.
 func (c *Client) ReadThread(t Thread, after, wait int) (Answer, []Message, []KeptOut, int64) {
+	t.Allow = normalizeAllow(t.Allow)
 	a, messages, next := c.Read(t.W, t.ID, after, wait)
 	if len(t.Allow) == 0 {
 		return a, messages, nil, next
@@ -450,7 +488,7 @@ func (c *Client) ReadThread(t Thread, after, wait int) (Answer, []Message, []Kep
 		if anySigned {
 			why = "this thread was opened for signed messages only, and this one did not verify here"
 		}
-		kept = append(kept, KeptOut{Seq: m.Seq, Why: why})
+		kept = append(kept, KeptOut{Seq: m.Seq, Why: why, UnverifiedBecause: m.UnverifiedBecause})
 	}
 	return a, handed, kept, next
 }
@@ -494,7 +532,24 @@ func CheckMessage(w string, raw map[string]any) (verified bool, whyNot string, d
 // checked first, and everything Decode does goes by that result. A message that
 // does not verify here has no From, so a sealed body under a forged sender is
 // not opened against the key it claimed.
-func (c *Client) DecodeAt(w string, raw map[string]any) Message {
+func (c *Client) DecodeAt(w string, raw map[string]any) (m Message) {
+	failed := func(reason string) Message {
+		seq, _ := integer(raw["seq"])
+		at, _ := integer(raw["at"])
+		body, _ := raw["body"].(string)
+		return Message{Seq: seq, At: at, Body: body, Format: "unreadable", Err: reason, UnverifiedBecause: reason}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			m = failed(fmt.Sprintf("the message could not be checked here: %T", recovered))
+		}
+	}()
+	if _, ok := integer(raw["seq"]); !ok {
+		return failed("the message has invalid sequence metadata")
+	}
+	if _, ok := integer(raw["at"]); !ok {
+		return failed("the message has invalid time metadata")
+	}
 	verified, whyNot, digest := CheckMessage(w, raw)
 	checked := make(map[string]any, len(raw))
 	for key, value := range raw {
@@ -507,7 +562,7 @@ func (c *Client) DecodeAt(w string, raw map[string]any) Message {
 	if digest != "" {
 		checked["sha256"] = digest
 	}
-	m := c.Decode(checked)
+	m = c.Decode(checked)
 	m.UnverifiedBecause = whyNot
 	return m
 }
@@ -516,14 +571,11 @@ func (c *Client) DecodeAt(w string, raw map[string]any) Message {
 // to us. verified, sealed and from are never taken from the payload. Decode
 // takes the service's fields as they are; Read goes through DecodeAt, which
 // checks them first.
+// Deprecated: Decode trusts supplied fields. Use DecodeAt or Read for remote input.
 func (c *Client) Decode(raw map[string]any) Message {
 	m := Message{Format: "text"}
-	if n, ok := raw["seq"].(json.Number); ok {
-		m.Seq, _ = n.Int64()
-	}
-	if n, ok := raw["at"].(json.Number); ok {
-		m.At, _ = n.Int64()
-	}
+	m.Seq, _ = integer(raw["seq"])
+	m.At, _ = integer(raw["at"])
 	m.From, _ = raw["from"].(string)
 	m.Verified, _ = raw["verified"].(bool)
 	m.Sealed, _ = raw["sealed"].(bool)
