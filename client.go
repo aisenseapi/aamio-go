@@ -21,7 +21,7 @@ var errWorkRanOut = errors.New("the work ran past the time the inbox takes write
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.2.5"
+	userAgent  = "aamio-go/0.2.6"
 	maxBody    = 65536
 )
 
@@ -420,6 +420,25 @@ type KeptOut struct {
 // not the service's word, and a message the service called verified that does
 // not check out says why in UnverifiedBecause.
 func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) {
+	return c.ReadLimited(w, id, after, wait, 0, 0)
+}
+
+// ReadLimited is Read, asking the service for a small answer.
+//
+// limit is at most this many messages; maxBytes at most this many bytes of them.
+// Zero for either means do not ask, and asking for neither is exactly Read. A
+// thread may hold two hundred messages of 65536 bytes, so one read can be about a
+// megabyte, and without these the whole of it crosses the network before anything
+// here looks at it.
+//
+// Whole messages only: a signed message cut in half does not verify. When something
+// was left behind the answer carries more, and next is the last message handed
+// over, so passing it back as after skips nothing. When one message alone is over
+// budget the answer carries too_large naming it and its size.
+//
+// A service that does not offer read-limits ignores both headers and answers as it
+// always did, so these are safe to send without asking what it supports.
+func (c *Client) ReadLimited(w, id string, after, wait, limit, maxBytes int) (Answer, []Message, int64) {
 	path := "/" + w
 	if after > 0 || wait > 0 {
 		path += "/after/" + strconv.Itoa(after)
@@ -430,7 +449,14 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 		}
 		path += "/wait/" + strconv.Itoa(wait)
 	}
-	a := c.Call("GET", c.Host+path, nil, map[string]string{"X-Read": id})
+	headers := map[string]string{"X-Read": id}
+	if limit > 0 {
+		headers["X-Limit"] = strconv.Itoa(limit)
+	}
+	if maxBytes > 0 {
+		headers["X-Max-Bytes"] = strconv.Itoa(maxBytes)
+	}
+	a := c.Call("GET", c.Host+path, nil, headers)
 	var messages []Message
 	// The cursor the caller already has, so a refusal or a dead connection
 	// leaves it where it was. Zero sent the documented loop back to the first
@@ -458,8 +484,15 @@ func (c *Client) Read(w, id string, after, wait int) (Answer, []Message, int64) 
 // messages verified here from any key. The rest is listed as kept out, never
 // dropped in silence. The cursor covers both.
 func (c *Client) ReadThread(t Thread, after, wait int) (Answer, []Message, []KeptOut, int64) {
+	return c.ReadThreadLimited(t, after, wait, 0, 0)
+}
+
+// ReadThreadLimited is ReadThread with the limits of ReadLimited. A smaller answer
+// is not a looser one: the allowlist is checked here exactly as before, and what it
+// keeps out is still listed rather than dropped in silence.
+func (c *Client) ReadThreadLimited(t Thread, after, wait, limit, maxBytes int) (Answer, []Message, []KeptOut, int64) {
 	t.Allow = normalizeAllow(t.Allow)
-	a, messages, next := c.Read(t.W, t.ID, after, wait)
+	a, messages, next := c.ReadLimited(t.W, t.ID, after, wait, limit, maxBytes)
 	if len(t.Allow) == 0 {
 		return a, messages, nil, next
 	}
