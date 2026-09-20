@@ -54,12 +54,12 @@ func Root(messages []ReceiptMessage) string {
 // Check is what a client can say about a receipt on its own: whether the
 // lines hash to the root it claims, whether the commitment is that root in
 // the sha256: form, and, given the hashes this process saw, whether they
-// agree. LocalRootMatches is nil when the receipt counts more messages than
+// agree. LocalHashesMatch is nil when the receipt counts more messages than
 // the client holds, which is a receipt taken later, not a failure.
 type Check struct {
 	RootAddsUp        bool
 	CommitmentMatches bool
-	LocalRootMatches  *bool
+	LocalHashesMatch  *bool
 }
 
 // VerifyReceipt recomputes and compares. localHashes may be nil.
@@ -71,7 +71,7 @@ func VerifyReceipt(r *Receipt, localHashes []string) Check {
 	}
 	if localHashes != nil && len(r.Messages) < len(localHashes) {
 		match := false
-		c.LocalRootMatches = &match
+		c.LocalHashesMatch = &match
 	} else if localHashes != nil && len(r.Messages) == len(localHashes) {
 		match := true
 		sorted := append([]ReceiptMessage(nil), r.Messages...)
@@ -82,7 +82,7 @@ func VerifyReceipt(r *Receipt, localHashes []string) Check {
 				break
 			}
 		}
-		c.LocalRootMatches = &match
+		c.LocalHashesMatch = &match
 	}
 	return c
 }

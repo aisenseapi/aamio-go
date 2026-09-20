@@ -123,7 +123,7 @@ func TestLegacyTrailingBitsAndExactIdentity(t *testing.T) {
 
 func TestReceiptCannotMatchAPrefixOfLocalHashes(t *testing.T) {
 	r := &Receipt{Messages: []ReceiptMessage{}, Root: Root(nil)}
-	got := VerifyReceipt(r, []string{"a"}).LocalRootMatches
+	got := VerifyReceipt(r, []string{"a"}).LocalHashesMatch
 	if got == nil || *got {
 		t.Fatal("shorter receipt is not a match")
 	}

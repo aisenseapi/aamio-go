@@ -155,7 +155,7 @@ func TestReceipt(t *testing.T) {
 		t.Fatal("the root recomputed from the lines is the published root")
 	}
 	c := VerifyReceipt(&v.Receipt, nil)
-	if !c.RootAddsUp || !c.CommitmentMatches || c.LocalRootMatches != nil {
+	if !c.RootAddsUp || !c.CommitmentMatches || c.LocalHashesMatch != nil {
 		t.Fatal("root_adds_up and commitment_matches on a real receipt, local unknown")
 	}
 	reversed := []ReceiptMessage{v.Receipt.Messages[1], v.Receipt.Messages[0]}
@@ -169,10 +169,10 @@ func TestReceipt(t *testing.T) {
 		t.Fatal("one changed hash breaks the root")
 	}
 	hashes := []string{v.Receipt.Messages[0].Sha256, v.Receipt.Messages[1].Sha256}
-	if c := VerifyReceipt(&v.Receipt, hashes); c.LocalRootMatches == nil || !*c.LocalRootMatches {
+	if c := VerifyReceipt(&v.Receipt, hashes); c.LocalHashesMatch == nil || !*c.LocalHashesMatch {
 		t.Fatal("local hashes that match say so")
 	}
-	if c := VerifyReceipt(&v.Receipt, hashes[:1]); c.LocalRootMatches != nil {
+	if c := VerifyReceipt(&v.Receipt, hashes[:1]); c.LocalHashesMatch != nil {
 		t.Fatal("fewer local hashes than the receipt counts is nil, not a failure")
 	}
 }
