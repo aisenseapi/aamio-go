@@ -4,6 +4,19 @@ Dates are the day the version was committed; this project tags on release and
 the two are the same day. Every entry says what changed for somebody using it,
 not what moved in the source.
 
+## 0.3.1 - 2026-09-26
+
+- The service has answered `reset` since 0.6.0 and this client had no name for
+  it. `reset` means the cursor belongs to an earlier thread at the address: the
+  one being read expired and was swept, and a write opened a new one there, with
+  the default lifetime and none of the old allowlist or gate. Following `next`
+  alone comes out right -- the loop corrects itself -- and says nothing, so a
+  stranger's new thread at the same address arrived as if the conversation had
+  continued. The field was always in the answer body; what was missing was a name
+  for it and a way to ask.
+- Found by checking the fourteen capabilities the service announces against what
+  each of the eight clients can say, which nothing had done before.
+
 ## 0.3.0 - 2026-09-20
 
 The minor moves because a returned field changed name. `Check.LocalRootMatches`

@@ -21,7 +21,7 @@ var errWorkRanOut = errors.New("the work ran past the time the inbox takes write
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.3.0"
+	userAgent  = "aamio-go/0.3.1"
 	maxBody    = 65536
 )
 
@@ -33,6 +33,47 @@ type Answer struct {
 	Body   map[string]any
 	Text   string
 	Header http.Header
+}
+
+// Reset is what an answer says when the cursor it was given belongs to an
+// earlier thread at the address.
+//
+// The thread being read expired and was swept, and a write opened a new one
+// there, with the default lifetime and none of the old allowlist or gate. The
+// answer reads from the start rather than waiting for the new numbering to pass
+// an old cursor, and carries this so the reader knows which of those happened.
+//
+// After holds the cursor that was sent, Newest the largest sequence number the
+// thread now has, and What says it in words.
+type Reset struct {
+	After  int64
+	Newest int64
+	What   string
+}
+
+// Reset reports whether this answer read from the start, and why.
+//
+// Following next alone comes out right: the loop corrects itself. What it does
+// not do is tell whoever is reading that these messages are from a different
+// thread than the one they were following, which is a stranger's conversation
+// arriving as if it were theirs. Ask here and say so.
+func (a Answer) Reset() (Reset, bool) {
+	if a.Body == nil {
+		return Reset{}, false
+	}
+
+	raw, ok := a.Body["reset"].(map[string]any)
+
+	if !ok {
+		return Reset{}, false
+	}
+
+	out := Reset{}
+	out.After, _ = integer(raw["after"])
+	out.Newest, _ = integer(raw["newest"])
+	out.What, _ = raw["what"].(string)
+
+	return out, true
 }
 
 // Error is the refusal contract: every 4xx and 5xx carries error and fix.
