@@ -21,7 +21,7 @@ var errWorkRanOut = errors.New("the work ran past the time the inbox takes write
 const (
 	// DefaultTTL is the thread lifetime the service uses when none is given.
 	DefaultTTL = 600
-	userAgent  = "aamio-go/0.3.1"
+	userAgent  = "aamio-go/0.3.2"
 	maxBody    = 65536
 )
 
