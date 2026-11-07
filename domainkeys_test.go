@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -72,7 +73,8 @@ func TestDomainKeyVectorsAreTheSharedOnes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(there) != string(here) {
+	// Compared without what a checkout does to line breaks.
+	if strings.ReplaceAll(string(there), "\r\n", "\n") != strings.ReplaceAll(string(here), "\r\n", "\n") {
 		t.Fatal("testdata/domain_keys_vectors.json differs from the one aamio-python keeps")
 	}
 }
